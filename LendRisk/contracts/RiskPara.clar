@@ -1,5 +1,5 @@
 ;; DeFi Lending Protocol with Upgradeable Risk Parameters
-;; Version: 1.0
+;; Version: 1.1
 
 ;; Constants
 (define-constant CONTRACT_OWNER tx-sender)
@@ -8,9 +8,13 @@
 (define-constant ERR_INSUFFICIENT_COLLATERAL (err u102))
 (define-constant ERR_LOAN_NOT_FOUND (err u103))
 (define-constant ERR_ALREADY_LIQUIDATED (err u104))
+(define-constant ERR_INVALID_PARAMETER (err u105))
+(define-constant ERR_INVALID_PRICE (err u106))
 (define-constant LIQUIDATION_THRESHOLD u150) ;; 150% collateral ratio
 (define-constant MINIMUM_COLLATERAL_RATIO u130) ;; 130% minimum ratio
 (define-constant GRACE_PERIOD u144) ;; ~24 hours in blocks
+(define-constant MAX_PRICE_VALUE u1000000000) ;; Maximum allowed price value
+(define-constant MAX_LOAN_AMOUNT u1000000000000) ;; Maximum loan amount
 
 ;; Data Maps and Variables
 (define-map loans
@@ -33,7 +37,7 @@
 )
 
 (define-map protocol-params
-    { param-name: (string-ascii 30) }
+    { param-name: (string-ascii 20) }
     { value: uint }
 )
 
@@ -41,11 +45,43 @@
 (define-data-var protocol-paused bool false)
 (define-data-var oracle-price uint u0)
 
+;; Input Validation Functions
+(define-private (is-valid-param-name (param-name (string-ascii 20)))    ;; Changed from 30 to 20
+    (let
+        (
+            (valid-names (list 
+                "base-interest-rate"
+                "liquidation-penalty"
+                "min-collateral-ratio"
+            ))
+        )
+        (is-some (index-of valid-names param-name))
+    )
+)
+
+(define-private (is-valid-price (price uint))
+    (and 
+        (> price u0) 
+        (<= price MAX_PRICE_VALUE)
+    )
+)
+
+(define-private (is-valid-amount (amount uint))
+    (and 
+        (> amount u0) 
+        (<= amount MAX_LOAN_AMOUNT)
+    )
+)
+
 ;; Governance Functions
-(define-public (set-protocol-param (param-name (string-ascii 30)) (value uint))
+(define-public (set-protocol-param (param-name (string-ascii 20)) (value uint))    ;; Added opening parenthesis
     (begin
         (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
-        (ok (map-set protocol-params { param-name: param-name } { value: value }))
+        (asserts! (is-valid-param-name param-name) ERR_INVALID_PARAMETER)
+        (asserts! (is-valid-amount value) ERR_INVALID_AMOUNT)
+        (ok (map-set protocol-params 
+            { param-name: param-name } 
+            { value: value }))
     )
 )
 
@@ -59,6 +95,7 @@
 (define-public (update-oracle-price (new-price uint))
     (begin
         (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+        (asserts! (is-valid-price new-price) ERR_INVALID_PRICE)
         (ok (var-set oracle-price new-price))
     )
 )
@@ -74,6 +111,8 @@
             (interest-rate (get-current-interest-rate))
         )
         (asserts! (not (var-get protocol-paused)) ERR_NOT_AUTHORIZED)
+        (asserts! (is-valid-amount collateral-amount) ERR_INVALID_AMOUNT)
+        (asserts! (is-valid-amount loan-amount) ERR_INVALID_AMOUNT)
         (asserts! (>= collateral-ratio MINIMUM_COLLATERAL_RATIO) ERR_INSUFFICIENT_COLLATERAL)
         (asserts! (> loan-amount u0) ERR_INVALID_AMOUNT)
         
@@ -105,6 +144,7 @@
             (interest-due (calculate-interest loan-id))
             (total-due (+ (get loan-amount loan) interest-due))
         )
+        (asserts! (is-valid-amount repayment-amount) ERR_INVALID_AMOUNT)
         (asserts! (is-eq (get borrower loan) tx-sender) ERR_NOT_AUTHORIZED)
         (asserts! (is-eq (get status loan) "active") ERR_ALREADY_LIQUIDATED)
         (asserts! (>= repayment-amount total-due) ERR_INVALID_AMOUNT)
@@ -185,4 +225,16 @@
         )
         (< current-ratio LIQUIDATION_THRESHOLD)
     )
+)
+
+(define-read-only (get-protocol-param (param-name (string-ascii 20)))    ;; Changed from 30 to 20
+    (map-get? protocol-params { param-name: param-name })
+)
+
+(define-read-only (is-protocol-paused)
+    (var-get protocol-paused)
+)
+
+(define-read-only (get-user-loans (user principal))
+    (map-get? user-loans { user: user })
 )
